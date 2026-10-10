@@ -1,0 +1,53 @@
+# Qinux kernel patches, applied in order by the linux-zen PKGBUILD.
+#
+# EMPTY ON PURPOSE, and this file explains why.
+#
+# ---------------------------------------------------------------------------
+# This reverses an earlier decision, so the reasoning matters
+# ---------------------------------------------------------------------------
+#
+# This repository originally built a vanilla LTS kernel with zero patches, on
+# the argument that a kernel patch is a permanent conflict to re-resolve on
+# every update, and that with no patches "upgrade the kernel" is "change one
+# line in a PKGBUILD".
+#
+# That reasoning was correct for a vanilla kernel and does not transfer to
+# Zen, for one reason: Zen is not a patch list. Zen publishes a
+# already-patched source tree as a tarball -- linux-zen-X.Y.Z-zenN.tar.xz from
+# zenkernel.org -- which contains its own patch queue already applied. There is
+# nothing for this file to list.
+#
+# So the decision is unchanged, but it now rests on a different fact. Qinux
+# inherits Zen's patch queue rather than maintaining one:
+#
+#   vanilla  0 patches here, upstream's tree is the base
+#   Zen      0 patches here, Zen's pre-patched tarball is the base
+#
+# In both cases the rule is the same: anything genuinely Qinux-specific needs
+# a reason in its commit message. What changed is that choosing Zen imports a
+# maintenance commitment this repository did not previously have. That is a
+# deliberate trade, and it is recorded rather than glossed over:
+#
+#   gained   the scheduler, memory management and BBR work Zen is for
+#   accepted that Zen publishes on its own cadence, and Qinux can only build
+#            what Zen has released. A Zen release that breaks is a Qinux
+#            release that breaks, and Qinux cannot fix it without forking Zen.
+#
+# There is a rollback: switching back to the vanilla kernel is deleting one
+# source line and regenerating the config from a different fragment. Nothing
+# else in the tree depends on Zen. Keeping that path cheap is deliberate.
+#
+# ---------------------------------------------------------------------------
+# Adding a line here
+# ---------------------------------------------------------------------------
+#
+# Before adding a Qinux-specific patch, check:
+#
+#   1. Is it needed for Qinux to boot, or only to look different?
+#   2. Has it been proposed upstream, or to Zen?
+#   3. Can it be a config option instead? Almost always yes. See
+#      config/zen.config for every symbol Qinux sets.
+#   4. What will the next Zen release cost to re-resolve this conflict?
+#
+# If the answer to 3 is yes, the answer to 4 does not matter and it should be a
+# config line rather than a patch.

@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# verify-config.sh - check a kernel config before a package is built from it.
+#
+# A kernel config that is missing a symbol produces a package that installs
+# cleanly and then does not boot, or boots to a black screen, or cannot see the
+# disk. None of those is visible at build time, which is why this exists.
+#
+# Usage:
+#   verify-config.sh [path-to-.config]
+#
+# Default: ../config, the config the PKGBUILD installs.
+#
+# Exit 0 if every required symbol is set, 1 otherwise. Optional symbols produce
+# warnings and never change the exit status: a machine missing one of those is
+# unusual, not unbootable.
+#
+# Two sets are checked:
+#
+#   required   Qinux will not boot, or cannot be installed, without these
+#   expected   expected on the machines Qinux targets, warned about only
+#
+# Zen-specific symbols are in the expected set, not the required one. A
+# vanilla kernel is a legitimate thing to build from this repository, and a
+# check that failed on one would make the check useless.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+CONFIG=${1:-$SCRIPT_DIR/../config}
+
+if [[ ! -r "$CONFIG" ]]; then
+    printf 'error: cannot read %s\n' "$CONFIG" >&2
+    exit 2
+fi
+
+# --- Required --------------------------------------------------------------
+#
+# Each of these has a failure mode that is silent at build time:
+#
+#   BLK_DEV_INITRD   no initramfs, kernel panics before userspace
+#   DEVTMPFS         systemd cannot create /dev entries, nothing starts
+#   EFI_STUB         firmware cannot find a kernel to boot on UEFI
+#   NVME             a modern laptop appears to have no disk
+#   DM_CRYPT, LUKS   an encrypted install cannot be written or read
+#   OVERLAY_FS       the live session cannot write; a container cannot run
+#   SQUASHFS         the ISO cannot mount its own root
+#   NETFILTER, VETH the installer cannot set up a network
+#   BRIDGE           docker and the live session's networking
+
+readonly REQUIRED=(
+    'CONFIG_BLK_DEV_INITRD=y'
+    'CONFIG_DEVTMPFS=y'
+    'CONFIG_DEVTMPFS_MOUNT=y'
+    'CONFIG_UEFI_FS=y'
+    'CONFIG_EFI_STUB=y'
+    'CONFIG_BLK_DEV_NVME=y'
+    'CONFIG_NVME_CORE=y'
+    'CONFIG_DM_CRYPT=y'
+    'CONFIG_LUKS=y'
+    'CONFIG_OVERLAY_FS=y'
+    'CONFIG_SQUASHFS=y'
+    'CONFIG_EXT4_FS=y'
+    'CONFIG_BTRFS_FS=y'
+    'CONFIG_XFS_FS=y'
+    'CONFIG_FUSE_FS=y'
+    'CONFIG_FUSE_BSD=m'
+    'CONFIG_NETFILTER=y'
+    'CONFIG_VETH=y'
+    'CONFIG_BRIDGE=y'
+)
+
+# --- Expected --------------------------------------------------------------
+#
+# Not fatal. Grouped by what breaks when they are wrong.
+
+readonly EXPECTED_QINUX=(
+    # A machine with none of these has no sound, no acceleration and no
+    # suspend, which is a real problem but not an unbootable one.
+    'CONFIG_SOUND=y'
+    'CONFIG_SND_HDA_INTEL=m'
+    'CONFIG_SND_SOC=y'
+    'CONFIG_KVM=y'
+    'CONFIG_SUSPEND=y'
+    'CONFIG_HIBERNATION=y'
+    'CONFIG_PM_STD_SUSPEND=y'
+
+    # Graphics. Without the DRM drivers a machine with AMD or Intel graphics
+    # boots to a black screen under Wayland, which is the most common report
+    # against a new distribution.
+    'CONFIG_DRM=y'
+    'CONFIG_DRM_AMDGPU=m'
+    # CONFIG_I915 was renamed to CONFIG_DRM_I915 upstream. Either name is
+    # accepted, because which one is correct depends on the kernel version and
+    # failing on the old name would reject a perfectly good config.
+
+    # Peripherals
+    'CONFIG_I2C_HID=m'
+    'CONFIG_USB_XHCI_HCD=y'
+    'CONFIG_THINKPAD_ACPI=m'
+    'CONFIG_DELL_LAPTOP=m'
+    'CONFIG_ACPI_VIDEO=m'
+
+    # Microcode. Without it a CPU runs with a stale errata list, which is not
+    # a boot problem and is a correctness one.
+    'CONFIG_MICROCODE=y'
+    'CONFIG_X86_MSR=m'
+
+    # Wireless. The installer needs a network and a machine with only wifi and
+    # no ethernet needs this to get one.
+    'CONFIG_WIREGUARD=m'
+)
+
+# Zen-specific. Warned about, never required: this repository also builds a
+# vanilla kernel, and a check that fails on one would be a check nobody trusts.
+readonly EXPECTED_ZEN=(
+    # The scheduler. Zen's reason for existing.
+    'CONFIG_PREEMPT=y'
+    'CONFIG_HZ_1000=y'
+
+    # Frequency scaling. A Zen kernel without the hardware driver runs the
+    # in-tree governor and performs no better than anything else, which is the
+    # most misleading possible failure: it works, it is just not Zen.
+    'CONFIG_AMD_PSTATE=y'
+    'CONFIG_X86_PCC_CPUFREQ=y'
+
+    # BBR, which Zen tunes
+    'CONFIG_TCP_CONG_BBR=y'
+    'CONFIG_TCP_CONG_ADVANCED=y'
+)
+
+# --- Check ----------------------------------------------------------------
+
+fail=0
+warn=0
+
+check_set() {
+    local label=$1
+    shift
+    local entry
+
+    printf '\n%s\n' "$label"
+    for entry in "$@"; do
+        if grep -qx "$entry" "$CONFIG"; then
+            printf '  ok       %s\n' "$entry"
+        else
+            printf '  MISSING  %s\n' "$entry"
+            return 1
+        fi
+    done
+    return 0
+}
+
+warn_set() {
+    local label=$1
+    shift
+    local entry
+
+    printf '\n%s\n' "$label"
+    for entry in "$@"; do
+        if grep -qx "$entry" "$CONFIG"; then
+            printf '  ok       %s\n' "$entry"
+        else
+            printf '  warning  %s\n' "$entry"
+            warn=$((warn + 1))
+        fi
+    done
+}
+
+# A config built with modconfig or a fragment may carry these at a different
+# level. Warned about rather than failed, because m is a legitimate choice for
+# a driver that Qinux does not load early.
+warn_set 'Zen (informational -- a vanilla kernel passes here)' "${EXPECTED_ZEN[@]}"
+warn_set 'Qinux targets (informational)' "${EXPECTED_QINUX[@]}"
+
+printf '\nRequired\n'
+check_set 'required' "${REQUIRED[@]}" || fail=1
+
+# --- Hardening ------------------------------------------------------------
+#
+# Warned about, but the warnings are worth reading: a distribution that ships a
+# kernel without these is making a decision, and the decision should be visible.
+
+# Accepted in either spelling. Checked separately from the loop above because
+# a symbol with two names cannot be expressed as one entry in an array.
+printf '\nIntel graphics (either spelling)\n'
+if grep -qx 'CONFIG_DRM_I915=m' "$CONFIG" || grep -qx 'CONFIG_DRM_INTEL_I915=m' "$CONFIG"; then
+    printf '  ok       CONFIG_DRM_I915=m or CONFIG_DRM_INTEL_I915=m\n'
+else
+    printf '  warning  neither CONFIG_DRM_I915=m nor CONFIG_DRM_INTEL_I915=m\n'
+    warn=$((warn + 1))
+fi
+
+printf '\nHardening (informational)\n'
+for entry in \
+    'CONFIG_STACKPROTECTOR_STRONG=y' \
+    'CONFIG_STRICT_KERNEL_RWX=y' \
+    'CONFIG_STRICT_MODULE_RWX=y' \
+    'CONFIG_RANDOMIZE_BASE=y' \
+    'CONFIG_RETPOLINE=y'
+do
+    if grep -qx "$entry" "$CONFIG"; then
+        printf '  ok       %s\n' "$entry"
+    else
+        printf '  warning  %s\n' "$entry"
+        warn=$((warn + 1))
+    fi
+done
+
+# --- Result ---------------------------------------------------------------
+
+printf '\n%s\n' '------------------------------------------------------------------------'
+
+if (( fail > 0 )); then
+    printf 'FAILED: a required symbol is missing. A package built from this\n'
+    printf 'config will install and then not boot, or boot to no disk.\n' >&2
+    exit 1
+fi
+
+printf 'config ok: %d required symbols present, %d warning(s)\n' \
+    "${#REQUIRED[@]}" "$warn"
+
+if (( warn > 0 )); then
+    printf 'Review the warnings above. They do not affect bootability, but each\n'
+    printf 'one names a capability this kernel will not have.\n'
+fi
